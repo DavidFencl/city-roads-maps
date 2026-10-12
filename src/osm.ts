@@ -70,9 +70,24 @@ export class OsmError extends Error {
 	}
 }
 
+export type TileCache = {
+	read(key: string): Promise<readonly Road[] | null>;
+	write(key: string, roads: readonly Road[]): Promise<void>;
+	readMany?(keys: readonly string[]): Promise<ReadonlyMap<string, readonly Road[] | null>>;
+};
+
+export type TileProgress = {
+	readonly done: number;
+	readonly total: number;
+	readonly roads: readonly Road[];
+	readonly bounds: BBox;
+};
+
 export type RequestOptions = {
 	readonly signal?: AbortSignal;
 	readonly marginKm?: number;
+	readonly tileCache?: TileCache;
+	readonly onTile?: (progress: TileProgress) => void;
 };
 
 export const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
@@ -167,9 +182,6 @@ export async function geocodeCity(
 	return relation ?? places[0]!;
 }
 
-// One `out geom` for a whole city returns HTTP 504. A tile near 0.12 degrees comes back in a few seconds.
-const TILE_SPAN_DEG = 0.12;
-
 // Kilometres to degrees. Latitude is nearly constant; longitude shrinks toward the poles.
 export function expandBBox(box: BBox, marginKm: number): BBox {
 	if (!(marginKm > 0)) return box;
@@ -192,15 +204,68 @@ export async function fetchRoads(
 	const marginKm = options?.marginKm ?? 0;
 	// A margin has to include roads outside the city polygon, so those fetches use the box only.
 	const bboxOnly = marginKm > 0;
+	const searchBox = expandBBox(place.bbox, marginKm);
+	const tiles = coverTiles(searchBox);
+	const keys = tiles.map((tile) => tileCacheKey(place, tile.key, bboxOnly));
+	const cached = options?.tileCache?.readMany
+		? await options.tileCache.readMany(keys)
+		: null;
 	const seen = new Set<number>();
 	const roads: Road[] = [];
-	for (const tile of tilesFor(expandBBox(place.bbox, marginKm))) {
-		for (const road of await roadsInTile(place, tile, options, 0, bboxOnly)) {
+	let done = 0;
+	const report = () => {
+		options?.onTile?.({ done, total: tiles.length, roads, bounds: searchBox });
+	};
+	const take = (list: readonly Road[]) => {
+		for (const road of list) {
 			if (seen.has(road.id)) continue;
 			seen.add(road.id);
 			roads.push(road);
 		}
+	};
+	const misses: number[] = [];
+	for (let i = 0; i < tiles.length; i++) {
+		const hit = cached?.get(keys[i]!);
+		if (hit != null) {
+			take(hit);
+			done += 1;
+		} else {
+			misses.push(i);
+		}
 	}
+	if (done > 0) report();
+	let cursor = 0;
+	const workers = Math.min(2, misses.length);
+	await Promise.all(
+		Array.from({ length: workers }, async () => {
+			for (;;) {
+				const index = cursor;
+				cursor += 1;
+				if (index >= misses.length) return;
+				const tileIndex = misses[index]!;
+				const tile = tiles[tileIndex]!;
+				const key = keys[tileIndex]!;
+				if (options?.signal?.aborted) throw abortError(options.signal);
+				let tileRoads: readonly Road[] | null = null;
+				if (!cached && options?.tileCache) {
+					tileRoads = await options.tileCache.read(key);
+				}
+				if (tileRoads == null) {
+					tileRoads = await roadsInTile(place, tile.box, options, 0, bboxOnly);
+					if (options?.tileCache) {
+						try {
+							await options.tileCache.write(key, tileRoads);
+						} catch {
+							// A failed write still leaves the roads on screen.
+						}
+					}
+				}
+				take(tileRoads);
+				done += 1;
+				report();
+			}
+		}),
+	);
 	if (roads.length === 0) {
 		throw new OsmError("overpass_empty", `No roads for ${place.name}.`);
 	}
@@ -247,22 +312,62 @@ function parseWays(data: unknown): Road[] {
 	return roads;
 }
 
-function tilesFor(box: BBox): BBox[] {
-	const width = box.east - box.west;
-	const height = box.north - box.south;
-	const cols = Math.max(1, Math.ceil(width / TILE_SPAN_DEG));
-	const rows = Math.max(1, Math.ceil(height / TILE_SPAN_DEG));
-	const tiles: BBox[] = [];
-	for (let row = 0; row < rows; row++) {
-		const south = box.south + (height * row) / rows;
-		const north = row === rows - 1 ? box.north : box.south + (height * (row + 1)) / rows;
-		for (let col = 0; col < cols; col++) {
-			const west = box.west + (width * col) / cols;
-			const east = col === cols - 1 ? box.east : box.west + (width * (col + 1)) / cols;
-			tiles.push({ west, south, east, north });
+const TILE_MICRO = 120_000;
+const MICRO = 1_000_000;
+
+export type CoverTile = {
+	readonly box: BBox;
+	readonly key: string;
+	readonly full: boolean;
+};
+
+// One `out geom` for a whole city returns HTTP 504. Cells sit on a fixed 0.12° grid,
+// so a wider margin reuses the cells it already fetched.
+export function coverTiles(box: BBox): CoverTile[] {
+	const west = Math.round(box.west * MICRO);
+	const south = Math.round(box.south * MICRO);
+	const east = Math.round(box.east * MICRO);
+	const north = Math.round(box.north * MICRO);
+	if (east <= west || north <= south) return [];
+	const i0 = Math.floor(west / TILE_MICRO);
+	const i1 = Math.floor((east - 1) / TILE_MICRO);
+	const j0 = Math.floor(south / TILE_MICRO);
+	const j1 = Math.floor((north - 1) / TILE_MICRO);
+	const tiles: CoverTile[] = [];
+	for (let j = j0; j <= j1; j++) {
+		for (let i = i0; i <= i1; i++) {
+			const cellWest = i * TILE_MICRO;
+			const cellSouth = j * TILE_MICRO;
+			const cellEast = cellWest + TILE_MICRO;
+			const cellNorth = cellSouth + TILE_MICRO;
+			const qWest = Math.max(cellWest, west);
+			const qSouth = Math.max(cellSouth, south);
+			const qEast = Math.min(cellEast, east);
+			const qNorth = Math.min(cellNorth, north);
+			if (qEast <= qWest || qNorth <= qSouth) continue;
+			const full =
+				qWest === cellWest &&
+				qSouth === cellSouth &&
+				qEast === cellEast &&
+				qNorth === cellNorth;
+			tiles.push({
+				box: {
+					west: qWest / MICRO,
+					south: qSouth / MICRO,
+					east: qEast / MICRO,
+					north: qNorth / MICRO,
+				},
+				key: full ? `${i}:${j}` : `p:${qWest}:${qSouth}:${qEast}:${qNorth}`,
+				full,
+			});
 		}
 	}
 	return tiles;
+}
+
+function tileCacheKey(place: Place, tileKey: string, bboxOnly: boolean): string {
+	if (bboxOnly || place.osm.kind === "node") return `b:${tileKey}`;
+	return `a:${place.osm.kind}:${place.osm.id}:${tileKey}`;
 }
 
 function quarter(box: BBox): BBox[] {

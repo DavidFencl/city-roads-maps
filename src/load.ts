@@ -60,6 +60,7 @@ export type AppEvent =
 	| { readonly kind: "roadColor"; readonly color: string }
 	| { readonly kind: "background"; readonly background: Background }
 	| { readonly kind: "weight"; readonly weight: LineWeight }
+	| { readonly kind: "useCustom"; readonly style: Style }
 	| { readonly kind: "margin"; readonly km: number };
 
 export const INITIAL_STATE: AppState = {
@@ -156,6 +157,8 @@ export function reduce(state: AppState, event: AppEvent): AppState {
 			return withPaint(state, withCustom(state, { background: event.background }).choice);
 		case "weight":
 			return withPaint(state, withCustom(state, { weight: event.weight }).choice);
+		case "useCustom":
+			return withPaint(state, { kind: "custom", style: event.style });
 		case "margin": {
 			const marginKm = clampMarginKm(event.km);
 			if (marginKm === state.marginKm) return state;

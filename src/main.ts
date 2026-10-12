@@ -24,8 +24,16 @@ import {
 	type Background,
 	type Camera,
 	type PresetId,
+	type Style,
 } from "./index.ts";
-import { mapCacheKey, readCachedMap, writeCachedMap } from "./cache.ts";
+import {
+	mapCacheKey,
+	readCachedMap,
+	readCachedTile,
+	readCachedTiles,
+	writeCachedMap,
+	writeCachedTile,
+} from "./cache.ts";
 import { downloadPng, downloadSvg } from "./export.ts";
 
 const form = byId("search-form", HTMLFormElement);
@@ -68,6 +76,8 @@ let lastSolidBg = "#F7F2E8";
 let lastPlacesQuery = "";
 let camera: Camera = FIT_CAMERA;
 let sharpTimer = 0;
+let tileNote = "";
+let rememberedCustom: Style = resolveStyle({ kind: "preset", id: "paper" });
 
 type Snapshot = {
 	readonly canvas: HTMLCanvasElement;
@@ -105,6 +115,25 @@ for (const [id, preset] of Object.entries(PRESETS) as [PresetId, (typeof PRESETS
 	});
 	presetsEl.append(button);
 }
+
+const customChip = document.createElement("button");
+customChip.type = "button";
+customChip.className = "chip";
+customChip.dataset.preset = "custom";
+customChip.title = "Custom";
+const customSwatch = document.createElement("span");
+customSwatch.className = "swatch";
+const customStroke = document.createElement("span");
+customStroke.className = "swatch-road";
+customSwatch.append(customStroke);
+const customLabel = document.createElement("span");
+customLabel.textContent = "Custom";
+customChip.append(customSwatch, customLabel);
+customChip.addEventListener("click", () => {
+	void dispatch({ kind: "useCustom", style: rememberedCustom });
+});
+presetsEl.append(customChip);
+paintCustomChip(rememberedCustom);
 
 form.addEventListener("submit", (event) => {
 	event.preventDefault();
@@ -351,7 +380,42 @@ async function dispatch(event: AppEvent): Promise<void> {
 				await dispatch({ kind: "loaded", map: cached });
 				return;
 			}
-			const map = await fetchRoads(place, { signal, marginKm });
+			tileNote = "";
+			state = { ...state, map: null };
+			syncUi({ paint: false });
+			let paintQueued = false;
+			const map = await fetchRoads(place, {
+				signal,
+				marginKm,
+				tileCache: {
+					read: readCachedTile,
+					write: writeCachedTile,
+					readMany: readCachedTiles,
+				},
+				onTile: (update) => {
+					if (gen !== inFlight || state.load.kind !== "loading") return;
+					tileNote = `${update.done} of ${update.total} tiles`;
+					if (update.roads.length === 0) {
+						syncUi({ paint: false });
+						return;
+					}
+					state = {
+						...state,
+						map: { place, bounds: update.bounds, roads: update.roads },
+					};
+					if (paintQueued) {
+						syncUi({ paint: false });
+						return;
+					}
+					paintQueued = true;
+					requestAnimationFrame(() => {
+						paintQueued = false;
+						if (gen !== inFlight || state.load.kind !== "loading") return;
+						syncUi();
+					});
+				},
+			});
+			tileNote = "";
 			if (gen !== inFlight) return;
 			await dispatch({ kind: "loaded", map });
 			void writeCachedMap(key, map).catch(() => undefined);
@@ -377,7 +441,8 @@ function syncUi(options?: { paint?: boolean }): void {
 	statusTextEl.textContent = message;
 	statusEl.dataset.busy = busy ? "true" : "false";
 	statusMark.hidden = !busy;
-	loadingEl.hidden = !busy;
+	const showCover = busy && (state.map?.roads.length ?? 0) === 0;
+	loadingEl.hidden = !showCover;
 	loadingText.textContent = message;
 	plate.setAttribute("aria-busy", busy ? "true" : "false");
 
@@ -412,13 +477,14 @@ function syncUi(options?: { paint?: boolean }): void {
 		queryInput.setAttribute("aria-expanded", "false");
 	}
 
+	if (state.choice.kind === "custom") rememberedCustom = state.choice.style;
+	paintCustomChip(rememberedCustom);
 	for (const chip of presetsEl.querySelectorAll<HTMLButtonElement>(".chip")) {
-		chip.setAttribute(
-			"aria-pressed",
-			state.choice.kind === "preset" && chip.dataset.preset === state.choice.id
-				? "true"
-				: "false",
-		);
+		const pressed =
+			chip.dataset.preset === "custom"
+				? state.choice.kind === "custom"
+				: state.choice.kind === "preset" && chip.dataset.preset === state.choice.id;
+		chip.setAttribute("aria-pressed", pressed ? "true" : "false");
 	}
 
 	if (style.background.kind === "solid") {
@@ -537,7 +603,9 @@ function statusText(current: AppState): string {
 		case "choose":
 			return "Several matches. Pick one.";
 		case "loading":
-			return `Fetching roads for ${current.load.place.name}. The first draw of a large city takes a few minutes.`;
+			return tileNote
+				? `Fetching roads for ${current.load.place.name}. ${tileNote}.`
+				: `Fetching roads for ${current.load.place.name}. The first draw of a large city takes a few minutes.`;
 		case "drawing":
 			return "Drawing the map.";
 		case "searchError":
@@ -583,6 +651,17 @@ function errorMessage(error: unknown): string {
 
 function isAbort(error: unknown): boolean {
 	return error instanceof DOMException && error.name === "AbortError";
+}
+
+function paintCustomChip(style: Style): void {
+	if (style.background.kind === "solid") {
+		customSwatch.style.background = style.background.color;
+		delete customSwatch.dataset.clear;
+	} else {
+		customSwatch.style.background = "";
+		customSwatch.dataset.clear = "true";
+	}
+	customStroke.style.background = cssColor(style.roadColor);
 }
 
 function marginLabel(km: number): string {

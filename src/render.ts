@@ -138,19 +138,28 @@ export function drawRoads(
 	ctx.strokeStyle = style.roadColor;
 	ctx.lineCap = "round";
 	ctx.lineJoin = "round";
+	const paths = new Map<number, Path2D>();
 	for (const road of map.roads) {
+		const widthKey = Math.round(
+			strokeWidthFor(road.highway, style.weight) * projector.strokeScale * 1000,
+		);
+		let path = paths.get(widthKey);
+		if (!path) {
+			path = new Path2D();
+			paths.set(widthKey, path);
+		}
 		const [first, second, ...rest] = road.path;
 		const start = projector.xy(first);
-		ctx.beginPath();
-		ctx.moveTo(start.x, start.y);
-		ctx.lineTo(projector.xy(second).x, projector.xy(second).y);
+		path.moveTo(start.x, start.y);
+		path.lineTo(projector.xy(second).x, projector.xy(second).y);
 		for (const point of rest) {
 			const p = projector.xy(point);
-			ctx.lineTo(p.x, p.y);
+			path.lineTo(p.x, p.y);
 		}
-		ctx.lineWidth =
-			strokeWidthFor(road.highway, style.weight) * projector.strokeScale;
-		ctx.stroke();
+	}
+	for (const [widthKey, path] of paths) {
+		ctx.lineWidth = widthKey / 1000;
+		ctx.stroke(path);
 	}
 	ctx.restore();
 	if (options?.credit !== false) drawCredit(ctx, style, view);
