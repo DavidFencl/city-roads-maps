@@ -5,6 +5,7 @@ export {
 	OVERPASS_ENDPOINTS,
 	OVERPASS_TIMEOUT_SEC,
 	OsmError,
+	expandBBox,
 	fetchRoads,
 	geocodeCity,
 	parseHighway,
@@ -43,8 +44,19 @@ export type {
 	StyleChoice,
 } from "./style.ts";
 
-export { VIEW, drawRoads, renderSvg } from "./render.ts";
-export type { View } from "./render.ts";
+export {
+	FIT_CAMERA,
+	MAX_ZOOM,
+	MIN_ZOOM,
+	VIEW,
+	clampCamera,
+	drawCredit,
+	drawRoads,
+	renderSvg,
+	snapshotFrame,
+	zoomCamera,
+} from "./render.ts";
+export type { Camera, DrawOptions, View } from "./render.ts";
 
-export { INITIAL_STATE, reduce } from "./load.ts";
+export { INITIAL_STATE, MARGIN_MAX_KM, clampMarginKm, reduce } from "./load.ts";
 export type { AppEvent, AppState, LoadState } from "./load.ts";

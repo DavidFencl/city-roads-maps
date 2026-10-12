@@ -56,6 +56,7 @@ export type OsmErrorCode =
 	| "no_results"
 	| "nominatim_http"
 	| "overpass_http"
+	| "overpass_busy"
 	| "overpass_empty"
 	| "bad_payload"
 	| "bad_view";
@@ -71,6 +72,7 @@ export class OsmError extends Error {
 
 export type RequestOptions = {
 	readonly signal?: AbortSignal;
+	readonly marginKm?: number;
 };
 
 export const NOMINATIM_URL = "https://nominatim.openstreetmap.org/search";
@@ -168,14 +170,32 @@ export async function geocodeCity(
 // One `out geom` for a whole city returns HTTP 504. A tile near 0.12 degrees comes back in a few seconds.
 const TILE_SPAN_DEG = 0.12;
 
+// Kilometres to degrees. Latitude is nearly constant; longitude shrinks toward the poles.
+export function expandBBox(box: BBox, marginKm: number): BBox {
+	if (!(marginKm > 0)) return box;
+	const midLat = (box.south + box.north) / 2;
+	const latDeg = marginKm / 110.574;
+	const cos = Math.cos((midLat * Math.PI) / 180);
+	const lonDeg = marginKm / (111.32 * Math.max(cos, 0.2));
+	return {
+		west: box.west - lonDeg,
+		south: Math.max(-85, box.south - latDeg),
+		east: box.east + lonDeg,
+		north: Math.min(85, box.north + latDeg),
+	};
+}
+
 export async function fetchRoads(
 	place: Place,
 	options?: RequestOptions,
 ): Promise<RoadMap> {
+	const marginKm = options?.marginKm ?? 0;
+	// A margin has to include roads outside the city polygon, so those fetches use the box only.
+	const bboxOnly = marginKm > 0;
 	const seen = new Set<number>();
 	const roads: Road[] = [];
-	for (const tile of tilesFor(place.bbox)) {
-		for (const road of await roadsInTile(place, tile, options, 0)) {
+	for (const tile of tilesFor(expandBBox(place.bbox, marginKm))) {
+		for (const road of await roadsInTile(place, tile, options, 0, bboxOnly)) {
 			if (seen.has(road.id)) continue;
 			seen.add(road.id);
 			roads.push(road);
@@ -261,29 +281,32 @@ async function roadsInTile(
 	box: BBox,
 	options: RequestOptions | undefined,
 	depth: number,
+	bboxOnly: boolean,
 ): Promise<Road[]> {
 	if (options?.signal?.aborted) throw abortError(options.signal);
 	try {
-		const data = await postOverpass(overpassQuery(place, box), options);
+		const data = await postOverpass(overpassQuery(place, box, bboxOnly), options);
 		return parseWays(data);
 	} catch (error) {
 		if (isAbort(error)) throw error;
+		// A busy dispatcher 504s. Smaller tiles only add more requests.
+		if (error instanceof OsmError && error.code === "overpass_busy") throw error;
 		if (!(error instanceof OsmError) || error.code !== "overpass_http" || depth >= 3) {
 			throw error;
 		}
 		const roads: Road[] = [];
 		for (const part of quarter(box)) {
-			roads.push(...(await roadsInTile(place, part, options, depth + 1)));
+			roads.push(...(await roadsInTile(place, part, options, depth + 1, bboxOnly)));
 		}
 		return roads;
 	}
 }
 
-function overpassQuery(place: Place, box: BBox): string {
+function overpassQuery(place: Place, box: BBox, bboxOnly: boolean): string {
 	const timeout = `[out:json][timeout:${OVERPASS_TIMEOUT_SEC}];`;
 	const { south, west, north, east } = box;
 	const bbox = `(${south},${west},${north},${east})`;
-	if (place.osm.kind === "node") {
+	if (bboxOnly || place.osm.kind === "node") {
 		return `${timeout}\nway[highway]${bbox};\nout geom;`;
 	}
 	// relation -> 3600000000, way -> 2400000000. Nodes have no area id.
@@ -294,55 +317,130 @@ function overpassQuery(place: Place, box: BBox): string {
 	return `${timeout}\narea(${areaId})->.searchArea;\nway[highway](area.searchArea)${bbox};\nout geom;`;
 }
 
+const BUSY_ATTEMPTS = 6;
+
 async function postOverpass(
 	query: string,
 	options?: RequestOptions,
 ): Promise<unknown> {
 	let lastError: OsmError | undefined;
+	let sawBusy = false;
 	for (const endpoint of OVERPASS_ENDPOINTS) {
-		if (options?.signal?.aborted) throw abortError(options.signal);
-		// A fresh deadline per server. One shared timer would cancel the fallbacks too.
-		const deadline = AbortSignal.timeout((OVERPASS_TIMEOUT_SEC + 8) * 1000);
-		const signal = options?.signal
-			? AbortSignal.any([options.signal, deadline])
-			: deadline;
-		try {
-			const response = await fetch(endpoint, {
-				method: "POST",
-				headers: identityHeaders("application/x-www-form-urlencoded; charset=UTF-8"),
-				body: new URLSearchParams({ data: query }),
-				signal,
-			});
-			if (!response.ok) {
+		for (let attempt = 0; attempt < BUSY_ATTEMPTS; attempt++) {
+			if (options?.signal?.aborted) throw abortError(options.signal);
+			await waitForSlot(endpoint, options?.signal);
+			const deadline = AbortSignal.timeout((OVERPASS_TIMEOUT_SEC + 8) * 1000);
+			const signal = options?.signal
+				? AbortSignal.any([options.signal, deadline])
+				: deadline;
+			try {
+				const response = await fetch(endpoint, {
+					method: "POST",
+					headers: identityHeaders("application/x-www-form-urlencoded; charset=UTF-8"),
+					body: new URLSearchParams({ data: query }),
+					signal,
+				});
+				const body = await response.text();
+				if (response.ok) {
+					const data = parseOverpassBody(body);
+					if (overpassFailed(data)) {
+						const remark = overpassRemark(data) ?? `Overpass error from ${endpoint}`;
+						if (isServerBusy(remark)) {
+							sawBusy = true;
+							lastError = busyError();
+							await sleep(busyWait(attempt), options?.signal);
+							continue;
+						}
+						throw new OsmError("overpass_http", remark);
+					}
+					if (hasElements(data) || !sawBusy) return data;
+					lastError = busyError();
+					continue;
+				}
+				if (response.status === 429 || isServerBusy(body)) {
+					sawBusy = true;
+					lastError = busyError();
+					const retryAfter = Number(response.headers.get("retry-after"));
+					const wait =
+						Number.isFinite(retryAfter) && retryAfter > 0
+							? retryAfter * 1000
+							: busyWait(attempt);
+					await sleep(wait, options?.signal);
+					continue;
+				}
 				lastError = new OsmError(
 					"overpass_http",
 					`Overpass ${response.status} from ${endpoint}`,
 				);
-				continue;
-			}
-			const data: unknown = await response.json();
-			if (overpassFailed(data)) {
+				break;
+			} catch (error) {
+				if (options?.signal?.aborted) throw abortError(options.signal);
+				if (error instanceof OsmError) throw error;
 				lastError = new OsmError(
 					"overpass_http",
-					overpassRemark(data) ?? `Overpass error from ${endpoint}`,
+					error instanceof Error ? error.message : `Overpass failed at ${endpoint}`,
 				);
-				continue;
+				break;
 			}
-			return data;
-		} catch (error) {
-			if (options?.signal?.aborted) throw abortError(options.signal);
-			lastError = new OsmError(
-				"overpass_http",
-				error instanceof Error ? error.message : `Overpass failed at ${endpoint}`,
-			);
 		}
 	}
-	throw lastError ?? new OsmError("overpass_http", "Overpass failed.");
+	throw lastError ?? busyError();
+}
+
+function busyError(): OsmError {
+	return new OsmError(
+		"overpass_busy",
+		"The map server is busy. Wait a moment, then try the city again.",
+	);
+}
+
+function busyWait(attempt: number): number {
+	return Math.min(2000 * 2 ** attempt, 12000);
+}
+
+function isServerBusy(text: string): boolean {
+	return /too busy|dispatcher|rate limit|too many requests|429/i.test(text);
+}
+
+async function waitForSlot(endpoint: string, signal?: AbortSignal): Promise<void> {
+	const url = endpoint.replace(/\/interpreter\/?$/, "/status");
+	try {
+		const headers = new Headers();
+		headers.set("Accept", "text/plain");
+		if (typeof globalThis.window === "undefined") {
+			headers.set("User-Agent", APP_USER_AGENT);
+		}
+		const response = await fetch(url, { headers, signal });
+		if (!response.ok) return;
+		const text = await response.text();
+		if (/slots available now/i.test(text)) return;
+		const waits = [...text.matchAll(/\bin (\d+) seconds/gi)].map((match) =>
+			Number(match[1]),
+		);
+		if (waits.length === 0) return;
+		const seconds = Math.min(...waits.filter((value) => Number.isFinite(value)));
+		if (!Number.isFinite(seconds)) return;
+		await sleep(Math.min(Math.max(seconds, 1), 20) * 1000, signal);
+	} catch (error) {
+		if (signal?.aborted) throw abortError(signal);
+	}
+}
+
+function parseOverpassBody(body: string): unknown {
+	try {
+		return JSON.parse(body) as unknown;
+	} catch {
+		throw new OsmError("bad_payload", "Overpass returned an unexpected payload.");
+	}
+}
+
+function hasElements(data: unknown): boolean {
+	return isRecord(data) && Array.isArray(data.elements) && data.elements.length > 0;
 }
 
 function overpassFailed(data: unknown): boolean {
 	if (!isRecord(data)) return true;
-	if (Array.isArray(data.elements) && data.elements.length > 0) return false;
+	if (hasElements(data)) return false;
 	const remark = overpassRemark(data);
 	if (!remark) return false;
 	return /error|timeout|timed out|too many|memory|rate_limited/i.test(remark);

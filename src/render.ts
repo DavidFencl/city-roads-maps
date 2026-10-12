@@ -8,7 +8,16 @@ export type View = {
 	readonly height: number;
 };
 
+export type Camera = {
+	readonly zoom: number;
+	readonly x: number;
+	readonly y: number;
+};
+
 export const VIEW: View = { width: 1600, height: 1600 };
+export const MIN_ZOOM = 1;
+export const MAX_ZOOM = 16;
+export const FIT_CAMERA: Camera = { zoom: 1, x: 0, y: 0 };
 
 const PAD = 0.05;
 const OSM_CREDIT = "© OpenStreetMap contributors";
@@ -53,12 +62,68 @@ export function renderSvg(map: RoadMap, style: Style, view: View): string {
 	return parts.join("");
 }
 
+export type DrawOptions = {
+	readonly camera?: Camera;
+	readonly credit?: boolean;
+};
+
+export function zoomCamera(
+	camera: Camera,
+	view: View,
+	anchorX: number,
+	anchorY: number,
+	nextZoom: number,
+): Camera {
+	const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, nextZoom));
+	const cx = view.width / 2;
+	const cy = view.height / 2;
+	const mapX = (anchorX - cx - camera.x) / camera.zoom + cx;
+	const mapY = (anchorY - cy - camera.y) / camera.zoom + cy;
+	return clampCamera(
+		{
+			zoom,
+			x: anchorX - cx - (mapX - cx) * zoom,
+			y: anchorY - cy - (mapY - cy) * zoom,
+		},
+		view,
+	);
+}
+
+export function clampCamera(camera: Camera, view: View): Camera {
+	const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, camera.zoom));
+	const limitX = (view.width / 2) * zoom;
+	const limitY = (view.height / 2) * zoom;
+	return {
+		zoom,
+		x: Math.min(limitX, Math.max(-limitX, camera.x)),
+		y: Math.min(limitY, Math.max(-limitY, camera.y)),
+	};
+}
+
+// How to blit a bitmap drawn with `from` so it matches `camera`.
+export function snapshotFrame(
+	camera: Camera,
+	from: Camera,
+	view: View,
+): { readonly scale: number; readonly x: number; readonly y: number } {
+	const scale = camera.zoom / from.zoom;
+	const cx = view.width / 2;
+	const cy = view.height / 2;
+	return {
+		scale,
+		x: cx + camera.x - scale * (cx + from.x),
+		y: cy + camera.y - scale * (cy + from.y),
+	};
+}
+
 export function drawRoads(
 	ctx: CanvasRenderingContext2D,
 	map: RoadMap,
 	style: Style,
 	view: View,
+	options?: DrawOptions,
 ): void {
+	const camera = options?.camera ?? FIT_CAMERA;
 	const projector = makeProjector(map.bounds, view);
 	ctx.save();
 	ctx.clearRect(0, 0, view.width, view.height);
@@ -66,6 +131,10 @@ export function drawRoads(
 		ctx.fillStyle = style.background.color;
 		ctx.fillRect(0, 0, view.width, view.height);
 	}
+	ctx.save();
+	ctx.translate(view.width / 2 + camera.x, view.height / 2 + camera.y);
+	ctx.scale(camera.zoom, camera.zoom);
+	ctx.translate(-view.width / 2, -view.height / 2);
 	ctx.strokeStyle = style.roadColor;
 	ctx.lineCap = "round";
 	ctx.lineJoin = "round";
@@ -83,15 +152,22 @@ export function drawRoads(
 			strokeWidthFor(road.highway, style.weight) * projector.strokeScale;
 		ctx.stroke();
 	}
+	ctx.restore();
+	if (options?.credit !== false) drawCredit(ctx, style, view);
+	ctx.restore();
+}
+
+export function drawCredit(
+	ctx: CanvasRenderingContext2D,
+	style: Style,
+	view: View,
+): void {
 	const font = Math.max(10, view.width * 0.00875);
+	ctx.save();
 	ctx.font = `${font}px sans-serif`;
 	ctx.fillStyle = creditFill(style);
 	ctx.textBaseline = "alphabetic";
-	ctx.fillText(
-		OSM_CREDIT,
-		view.width * 0.02,
-		view.height - view.height * 0.018,
-	);
+	ctx.fillText(OSM_CREDIT, view.width * 0.02, view.height - view.height * 0.018);
 	ctx.restore();
 }
 

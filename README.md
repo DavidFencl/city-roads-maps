@@ -18,6 +18,8 @@ npm run dev
 
 Open the URL Vite prints, usually http://localhost:5173. Type a city in the search box and press **Draw**.
 
+Scroll or pinch the map to zoom, and drag to move it. **Fit** shows the whole city again. **Outside the city** adds a band of roads past the boundary, in kilometres. The browser stores each city for two weeks, so the next open of that city skips Overpass. SVG and PNG export the full map, not the current zoom.
+
 Build the production bundle.
 
 ```sh

@@ -25,26 +25,44 @@
 
 				<form id="search-form" class="search">
 					<label class="field" for="city-query">City</label>
-					<div class="search-row">
-						<input
-							id="city-query"
-							name="q"
-							type="search"
-							placeholder="Prague"
-							autocomplete="off"
-							enterkeyhint="search"
-							spellcheck="false"
-						/>
-						<button class="draw" type="submit">Draw</button>
+					<div class="search-anchor">
+						<div class="search-row">
+							<input
+								id="city-query"
+								name="q"
+								type="search"
+								placeholder="Prague"
+								autocomplete="off"
+								enterkeyhint="search"
+								spellcheck="false"
+								aria-autocomplete="list"
+								aria-controls="places"
+								aria-expanded="false"
+							/>
+							<button class="draw" type="submit">Draw</button>
+						</div>
+						<ul id="places" class="places" role="listbox" hidden></ul>
 					</div>
 				</form>
 
-				<p id="status" class="status" role="status"></p>
+				<p id="status" class="status" role="status">
+					<span id="status-mark" class="mark" hidden></span>
+					<span id="status-text"></span>
+				</p>
 				<p id="error" class="error" hidden>
 					<span id="error-text"></span>
 					<button type="button" id="retry">Retry</button>
 				</p>
-				<ul id="places" class="places" hidden></ul>
+				<section class="block" aria-labelledby="around-label">
+					<h2 id="around-label">Around</h2>
+					<label class="mix-row" for="margin">
+						<span>Outside the city <output id="margin-out" for="margin">0 km</output></span>
+						<input id="margin" type="range" min="0" max="20" step="1" value="0" />
+					</label>
+					<p class="hint">
+						Adds roads beyond the city boundary. This browser keeps a copy, so the next open skips the download.
+					</p>
+				</section>
 
 				<section class="block" aria-labelledby="look-label">
 					<h2 id="look-label">Look</h2>
@@ -87,9 +105,18 @@
 				</p>
 			</aside>
 
-			<main class="plate">
-				<canvas id="map" aria-label="City roads"></canvas>
+			<main class="plate" id="plate">
+				<canvas id="map" aria-label="City roads" tabindex="0"></canvas>
+				<div class="zoom" id="zoom" hidden>
+					<button type="button" id="zoom-in" aria-label="Zoom in">+</button>
+					<button type="button" id="zoom-out" aria-label="Zoom out">−</button>
+					<button type="button" id="zoom-fit" aria-label="Fit the city">Fit</button>
+				</div>
 				<p id="empty" class="empty">Type a city to draw its roads.</p>
+				<p id="loading" class="loading" hidden aria-hidden="true">
+					<span class="mark" aria-hidden="true"></span>
+					<span id="loading-text"></span>
+				</p>
 			</main>
 		</div>
 		<script type="module" src="/src/main.ts"></script>

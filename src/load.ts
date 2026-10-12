@@ -17,6 +17,7 @@ export type LoadState =
 			readonly places: readonly Place[];
 	  }
 	| { readonly kind: "loading"; readonly place: Place }
+	| { readonly kind: "drawing" }
 	| {
 			readonly kind: "searchError";
 			readonly query: string;
@@ -28,10 +29,18 @@ export type LoadState =
 			readonly message: string;
 	  };
 
+export const MARGIN_MAX_KM = 20;
+
+export function clampMarginKm(value: number): number {
+	if (!Number.isFinite(value)) return 0;
+	return Math.min(MARGIN_MAX_KM, Math.max(0, Math.round(value)));
+}
+
 export type AppState = {
 	readonly map: RoadMap | null;
 	readonly load: LoadState;
 	readonly choice: StyleChoice;
+	readonly marginKm: number;
 };
 
 export type AppEvent =
@@ -43,18 +52,21 @@ export type AppEvent =
 	  }
 	| { readonly kind: "choose"; readonly place: Place }
 	| { readonly kind: "loaded"; readonly map: RoadMap }
+	| { readonly kind: "painted" }
 	| { readonly kind: "fail"; readonly message: string }
 	| { readonly kind: "retry" }
 	| { readonly kind: "reset" }
 	| { readonly kind: "preset"; readonly id: PresetId }
 	| { readonly kind: "roadColor"; readonly color: string }
 	| { readonly kind: "background"; readonly background: Background }
-	| { readonly kind: "weight"; readonly weight: LineWeight };
+	| { readonly kind: "weight"; readonly weight: LineWeight }
+	| { readonly kind: "margin"; readonly km: number };
 
 export const INITIAL_STATE: AppState = {
 	map: null,
 	load: { kind: "idle" },
 	choice: { kind: "preset", id: "paper" },
+	marginKm: 0,
 };
 
 export function reduce(state: AppState, event: AppEvent): AppState {
@@ -96,7 +108,11 @@ export function reduce(state: AppState, event: AppEvent): AppState {
 			if (placeKey(state.load.place) !== placeKey(event.map.place)) {
 				return state;
 			}
-			return { ...state, map: event.map, load: { kind: "idle" } };
+			return { ...state, map: event.map, load: { kind: "drawing" } };
+		}
+		case "painted": {
+			if (state.load.kind !== "drawing") return state;
+			return { ...state, load: { kind: "idle" } };
 		}
 		case "fail": {
 			if (state.load.kind === "searching") {
@@ -133,13 +149,29 @@ export function reduce(state: AppState, event: AppEvent): AppState {
 		case "reset":
 			return { ...state, load: { kind: "idle" } };
 		case "preset":
-			return { ...state, choice: { kind: "preset", id: event.id } };
+			return withPaint(state, { kind: "preset", id: event.id });
 		case "roadColor":
-			return withCustom(state, { roadColor: event.color });
+			return withPaint(state, withCustom(state, { roadColor: event.color }).choice);
 		case "background":
-			return withCustom(state, { background: event.background });
+			return withPaint(state, withCustom(state, { background: event.background }).choice);
 		case "weight":
-			return withCustom(state, { weight: event.weight });
+			return withPaint(state, withCustom(state, { weight: event.weight }).choice);
+		case "margin": {
+			const marginKm = clampMarginKm(event.km);
+			if (marginKm === state.marginKm) return state;
+			const next = { ...state, marginKm };
+			const place = activePlace(state);
+			if (
+				place &&
+				(state.load.kind === "idle" ||
+					state.load.kind === "drawing" ||
+					state.load.kind === "loading" ||
+					state.load.kind === "fetchError")
+			) {
+				return { ...next, load: { kind: "loading", place } };
+			}
+			return next;
+		}
 		default: {
 			const _exhaustive: never = event;
 			return _exhaustive;
@@ -155,6 +187,22 @@ function withCustom(state: AppState, patch: Partial<Style>): AppState {
 	};
 }
 
+function withPaint(state: AppState, choice: StyleChoice): AppState {
+	const next = { ...state, choice };
+	if (state.map && (state.load.kind === "idle" || state.load.kind === "drawing")) {
+		return { ...next, load: { kind: "drawing" } };
+	}
+	return next;
+}
+
 function placeKey(place: Place): string {
 	return `${place.osm.kind}:${place.osm.id}`;
+}
+
+function activePlace(state: AppState): Place | null {
+	if (state.map) return state.map.place;
+	if (state.load.kind === "loading" || state.load.kind === "fetchError") {
+		return state.load.place;
+	}
+	return null;
 }
