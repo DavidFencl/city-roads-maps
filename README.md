@@ -1,5 +1,7 @@
 # Draw every road
 
+The site is published at [https://davidfencl.github.io/city-roads-maps/](https://davidfencl.github.io/city-roads-maps/).
+
 ## Run the app
 
 Install dependencies.
