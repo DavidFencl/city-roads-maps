@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Draw every road</title>
+		<link
+			rel="icon"
+			href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2314161a'/%3E%3Cpath d='M4 22 L12 10 L20 18 L28 8' fill='none' stroke='%23c4783a' stroke-width='2'/%3E%3C/svg%3E"
+		/>
+		<link rel="preconnect" href="https://fonts.googleapis.com" />
+		<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+		<link
+			href="https://fonts.googleapis.com/css2?family=Figtree:ital,wght@0,400;0,500;0,600;1,400&family=Instrument+Serif:ital@0;1&display=swap"
+			rel="stylesheet"
+		/>
+	</head>
+	<body>
+		<div class="app">
+			<aside class="rail" aria-label="Controls">
+				<header class="mast">
+					<h1>Draw <em>every</em> road</h1>
+					<p class="lede">Name a city. We pull its streets from OpenStreetMap and ink them as line art.</p>
+				</header>
+
+				<form id="search-form" class="search">
+					<label class="field" for="city-query">City</label>
+					<div class="search-row">
+						<input
+							id="city-query"
+							name="q"
+							type="search"
+							placeholder="Prague"
+							autocomplete="off"
+							enterkeyhint="search"
+							spellcheck="false"
+						/>
+						<button class="draw" type="submit">Draw</button>
+					</div>
+				</form>
+
+				<p id="status" class="status" role="status"></p>
+				<p id="error" class="error" hidden>
+					<span id="error-text"></span>
+					<button type="button" id="retry">Retry</button>
+				</p>
+				<ul id="places" class="places" hidden></ul>
+
+				<section class="block" aria-labelledby="look-label">
+					<h2 id="look-label">Look</h2>
+					<div id="presets" class="chips"></div>
+				</section>
+
+				<section class="block mix" aria-labelledby="mix-label">
+					<h2 id="mix-label">Mix</h2>
+					<label class="mix-row" for="bg-color">
+						<span>Background</span>
+						<input id="bg-color" type="color" value="#F7F2E8" />
+					</label>
+					<label class="check" for="bg-transparent">
+						<input id="bg-transparent" type="checkbox" />
+						<span>Transparent plate</span>
+					</label>
+					<label class="mix-row" for="road-color">
+						<span>Roads</span>
+						<input id="road-color" type="color" value="#1A1A1A" />
+					</label>
+					<label class="mix-row" for="weight">
+						<span>Weight <output id="weight-out" for="weight">1.15</output></span>
+						<input id="weight" type="range" min="0.4" max="2.8" step="0.05" value="1.15" />
+					</label>
+					<label class="check" for="by-class">
+						<input id="by-class" type="checkbox" />
+						<span>Heavier highways</span>
+					</label>
+				</section>
+
+				<div class="exports">
+					<button type="button" id="export-svg" disabled>Export SVG</button>
+					<button type="button" id="export-png" disabled>Export PNG</button>
+				</div>
+
+				<p class="credit">
+					Map data ©
+					<a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>
+					contributors
+				</p>
+			</aside>
+
+			<main class="plate">
+				<canvas id="map" aria-label="City roads"></canvas>
+				<p id="empty" class="empty">Type a city to draw its roads.</p>
+			</main>
+		</div>
+		<script type="module" src="/src/main.ts"></script>
+	</body>
+</html>
