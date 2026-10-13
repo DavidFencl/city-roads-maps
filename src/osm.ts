@@ -80,6 +80,7 @@ export type TileProgress = {
 	readonly done: number;
 	readonly total: number;
 	readonly roads: readonly Road[];
+	readonly added: readonly Road[];
 	readonly bounds: BBox;
 };
 
@@ -213,27 +214,32 @@ export async function fetchRoads(
 	const seen = new Set<number>();
 	const roads: Road[] = [];
 	let done = 0;
-	const report = () => {
-		options?.onTile?.({ done, total: tiles.length, roads, bounds: searchBox });
+	const report = (added: readonly Road[]) => {
+		options?.onTile?.({ done, total: tiles.length, roads, added, bounds: searchBox });
 	};
-	const take = (list: readonly Road[]) => {
+	const take = (list: readonly Road[]): Road[] => {
+		const added: Road[] = [];
 		for (const road of list) {
 			if (seen.has(road.id)) continue;
 			seen.add(road.id);
 			roads.push(road);
+			added.push(road);
 		}
+		return added;
 	};
 	const misses: number[] = [];
+	const cachedAdded: Road[] = [];
 	for (let i = 0; i < tiles.length; i++) {
 		const hit = cached?.get(keys[i]!);
 		if (hit != null) {
-			take(hit);
+			cachedAdded.push(...take(hit));
 			done += 1;
 		} else {
 			misses.push(i);
 		}
 	}
-	if (done > 0) report();
+	if (done > 0) report(cachedAdded);
+	if (misses.length > 0) await yieldToPaint();
 	let cursor = 0;
 	const workers = Math.min(2, misses.length);
 	await Promise.all(
@@ -260,9 +266,10 @@ export async function fetchRoads(
 						}
 					}
 				}
-				take(tileRoads);
+				const added = take(tileRoads);
 				done += 1;
-				report();
+				report(added);
+				await yieldToPaint();
 			}
 		}),
 	);
@@ -274,6 +281,12 @@ export async function fetchRoads(
 		bounds: boundsOf(roads, place.bbox),
 		roads,
 	};
+}
+
+export function yieldToPaint(): Promise<void> {
+	return new Promise((resolve) => {
+		setTimeout(resolve, 0);
+	});
 }
 
 export function parseNominatimSearch(data: unknown): Place[] {

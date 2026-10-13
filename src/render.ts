@@ -65,6 +65,7 @@ export function renderSvg(map: RoadMap, style: Style, view: View): string {
 export type DrawOptions = {
 	readonly camera?: Camera;
 	readonly credit?: boolean;
+	readonly clear?: boolean;
 };
 
 export function zoomCamera(
@@ -125,19 +126,20 @@ export function drawRoads(
 ): void {
 	const camera = options?.camera ?? FIT_CAMERA;
 	const projector = makeProjector(map.bounds, view);
+	const clip = visibleWindow(camera, view);
 	ctx.save();
-	ctx.clearRect(0, 0, view.width, view.height);
-	if (style.background.kind === "solid") {
-		ctx.fillStyle = style.background.color;
-		ctx.fillRect(0, 0, view.width, view.height);
+	if (options?.clear !== false) {
+		ctx.clearRect(0, 0, view.width, view.height);
+		if (style.background.kind === "solid") {
+			ctx.fillStyle = style.background.color;
+			ctx.fillRect(0, 0, view.width, view.height);
+		}
 	}
 	ctx.save();
 	ctx.translate(view.width / 2 + camera.x, view.height / 2 + camera.y);
 	ctx.scale(camera.zoom, camera.zoom);
 	ctx.translate(-view.width / 2, -view.height / 2);
 	ctx.strokeStyle = style.roadColor;
-	ctx.lineCap = "round";
-	ctx.lineJoin = "round";
 	const paths = new Map<number, Path2D>();
 	for (const road of map.roads) {
 		const widthKey = Math.round(
@@ -148,17 +150,15 @@ export function drawRoads(
 			path = new Path2D();
 			paths.set(widthKey, path);
 		}
-		const [first, second, ...rest] = road.path;
-		const start = projector.xy(first);
-		path.moveTo(start.x, start.y);
-		path.lineTo(projector.xy(second).x, projector.xy(second).y);
-		for (const point of rest) {
-			const p = projector.xy(point);
-			path.lineTo(p.x, p.y);
-		}
+		appendRoad(path, road, projector, clip);
 	}
 	for (const [widthKey, path] of paths) {
-		ctx.lineWidth = widthKey / 1000;
+		const width = widthKey / 1000;
+		// Round caps on a hairline are pure cost at city scale. Compare in CSS pixels.
+		const thin = width * camera.zoom < 2;
+		ctx.lineCap = thin ? "butt" : "round";
+		ctx.lineJoin = thin ? "bevel" : "round";
+		ctx.lineWidth = width;
 		ctx.stroke(path);
 	}
 	ctx.restore();
@@ -206,6 +206,70 @@ function makeProjector(bounds: BBox, view: View): Projector {
 		},
 		strokeScale: Math.min(view.width, view.height) / VIEW.width,
 	};
+}
+
+type Clip = {
+	readonly minX: number;
+	readonly minY: number;
+	readonly maxX: number;
+	readonly maxY: number;
+};
+
+// Points closer than this to the previous kept point share a pixel at city scale.
+const MIN_STEP_SQ = 0.75 * 0.75;
+const scratch: number[] = [];
+
+// City-fit draws every road. A zoomed plate skips roads outside this map-space box.
+function visibleWindow(camera: Camera, view: View): Clip | null {
+	if (camera.zoom <= 1 && camera.x === 0 && camera.y === 0) return null;
+	const pad = 8;
+	const zoom = camera.zoom;
+	const cx = view.width / 2;
+	const cy = view.height / 2;
+	return {
+		minX: (-pad - cx - camera.x) / zoom + cx,
+		maxX: (view.width + pad - cx - camera.x) / zoom + cx,
+		minY: (-pad - cy - camera.y) / zoom + cy,
+		maxY: (view.height + pad - cy - camera.y) / zoom + cy,
+	};
+}
+
+function appendRoad(path: Path2D, road: Road, projector: Projector, clip: Clip | null): void {
+	const points = road.path;
+	const last = points.length - 1;
+	scratch.length = 0;
+	let minX = Infinity;
+	let minY = Infinity;
+	let maxX = -Infinity;
+	let maxY = -Infinity;
+	let keptX = 0;
+	let keptY = 0;
+	for (let i = 0; i < points.length; i++) {
+		const p = projector.xy(points[i]!);
+		if (i > 0 && i < last) {
+			const dx = p.x - keptX;
+			const dy = p.y - keptY;
+			if (dx * dx + dy * dy < MIN_STEP_SQ) continue;
+		}
+		scratch.push(p.x, p.y);
+		if (p.x < minX) minX = p.x;
+		if (p.y < minY) minY = p.y;
+		if (p.x > maxX) maxX = p.x;
+		if (p.y > maxY) maxY = p.y;
+		keptX = p.x;
+		keptY = p.y;
+	}
+	if (scratch.length < 4) return;
+	if (
+		clip &&
+		(maxX < clip.minX || minX > clip.maxX || maxY < clip.minY || minY > clip.maxY)
+	) {
+		return;
+	}
+	path.moveTo(scratch[0]!, scratch[1]!);
+	for (let i = 2; i < scratch.length; i += 2) {
+		path.lineTo(scratch[i]!, scratch[i + 1]!);
+	}
 }
 
 function mercatorX(lon: number): number {

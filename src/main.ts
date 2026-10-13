@@ -24,6 +24,7 @@ import {
 	type Background,
 	type Camera,
 	type PresetId,
+	type Road,
 	type Style,
 } from "./index.ts";
 import {
@@ -89,6 +90,18 @@ type Snapshot = {
 };
 
 let snapshot: Snapshot | null = null;
+
+// Roads drawn while tiles are still arriving. Thrown away when the frame or the style changes.
+type Ink = {
+	readonly canvas: HTMLCanvasElement;
+	readonly cssW: number;
+	readonly cssH: number;
+	readonly dpr: number;
+	readonly boundsKey: string;
+	readonly styleKey: string;
+};
+
+let ink: Ink | null = null;
 const pointers = new Map<number, { readonly x: number; readonly y: number }>();
 let pinch: { readonly distance: number; readonly zoom: number } | null = null;
 
@@ -216,7 +229,7 @@ zoomFitBtn.addEventListener("click", () => {
 canvas.addEventListener(
 	"wheel",
 	(event) => {
-		if (!state.map || state.load.kind === "drawing") return;
+		if (!state.map || state.load.kind === "drawing" || state.load.kind === "loading") return;
 		event.preventDefault();
 		let delta = event.deltaY;
 		if (event.deltaMode === 1) delta *= 16;
@@ -238,6 +251,7 @@ canvas.addEventListener(
 
 canvas.addEventListener("pointerdown", (event) => {
 	if (!state.map || event.button !== 0) return;
+	if (state.load.kind === "loading" || state.load.kind === "drawing") return;
 	canvas.setPointerCapture(event.pointerId);
 	pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
 	if (pointers.size === 2) {
@@ -327,6 +341,7 @@ async function dispatch(event: AppEvent): Promise<void> {
 	if (prev.load.kind === "loading" && state.load.kind === "drawing") {
 		camera = FIT_CAMERA;
 		snapshot = null;
+		window.clearTimeout(sharpTimer);
 	}
 	const scheduleDraw =
 		state.load.kind === "drawing" && prev.load.kind !== "drawing";
@@ -384,8 +399,8 @@ async function dispatch(event: AppEvent): Promise<void> {
 			}
 			tileNote = "";
 			state = { ...state, map: null };
+			ink = null;
 			syncUi({ paint: false });
-			let paintQueued = false;
 			const map = await fetchRoads(place, {
 				signal,
 				marginKm,
@@ -405,16 +420,8 @@ async function dispatch(event: AppEvent): Promise<void> {
 						...state,
 						map: { place, bounds: update.bounds, roads: update.roads },
 					};
-					if (paintQueued) {
-						syncUi({ paint: false });
-						return;
-					}
-					paintQueued = true;
-					requestAnimationFrame(() => {
-						paintQueued = false;
-						if (gen !== inFlight || state.load.kind !== "loading") return;
-						syncUi();
-					});
+					paintIncoming(update.added);
+					syncUi({ paint: false });
 				},
 			});
 			tileNote = "";
@@ -528,7 +535,67 @@ function nextPaint(): Promise<void> {
 	});
 }
 
+function paintIncoming(added: readonly Road[]): void {
+	if (!state.map) return;
+	const rect = canvas.getBoundingClientRect();
+	const cssW = Math.max(1, rect.width);
+	const cssH = Math.max(1, rect.height);
+	const dpr = window.devicePixelRatio || 1;
+	const view = { width: cssW, height: cssH };
+	const style = resolveStyle(state.choice);
+	const styleKey = JSON.stringify(style);
+	const key = `${state.map.bounds.west},${state.map.bounds.south},${state.map.bounds.east},${state.map.bounds.north}`;
+	const pixelW = Math.max(1, Math.round(cssW * dpr));
+	const pixelH = Math.max(1, Math.round(cssH * dpr));
+	const current = ink;
+	const mismatch =
+		!current ||
+		current.cssW !== cssW ||
+		current.cssH !== cssH ||
+		current.dpr !== dpr ||
+		current.boundsKey !== key ||
+		current.styleKey !== styleKey ||
+		current.canvas.width !== pixelW ||
+		current.canvas.height !== pixelH;
+	if (mismatch) {
+		const buffer = current?.canvas ?? document.createElement("canvas");
+		buffer.width = pixelW;
+		buffer.height = pixelH;
+		const bufferCtx = buffer.getContext("2d");
+		if (!bufferCtx) return;
+		bufferCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+		drawRoads(bufferCtx, state.map, style, view, {
+			camera: FIT_CAMERA,
+			credit: false,
+			clear: true,
+		});
+		ink = { canvas: buffer, cssW, cssH, dpr, boundsKey: key, styleKey };
+	} else if (added.length > 0) {
+		const bufferCtx = current.canvas.getContext("2d");
+		if (!bufferCtx) return;
+		bufferCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+		drawRoads(bufferCtx, { ...state.map, roads: added }, style, view, {
+			camera: FIT_CAMERA,
+			credit: false,
+			clear: false,
+		});
+	}
+	if (!ink) return;
+	if (canvas.width !== pixelW || canvas.height !== pixelH) {
+		canvas.width = pixelW;
+		canvas.height = pixelH;
+	}
+	ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+	ctx.clearRect(0, 0, cssW, cssH);
+	ctx.drawImage(ink.canvas, 0, 0, cssW, cssH);
+	drawCredit(ctx, style, view);
+}
+
 function paintMap(mode: "sharp" | "glide" = "sharp"): void {
+	if (state.load.kind === "loading" && state.map) {
+		paintIncoming([]);
+		return;
+	}
 	const rect = canvas.getBoundingClientRect();
 	const cssW = Math.max(1, rect.width);
 	const cssH = Math.max(1, rect.height);
@@ -546,8 +613,10 @@ function paintMap(mode: "sharp" | "glide" = "sharp"): void {
 	if (!state.map) {
 		ctx.clearRect(0, 0, cssW, cssH);
 		snapshot = null;
+		ink = null;
 		return;
 	}
+	ink = null;
 	const style = resolveStyle(state.choice);
 	if (mode === "glide" && snapshot && snapshot.cssW === cssW && snapshot.cssH === cssH) {
 		const frame = snapshotFrame(camera, snapshot.camera, view);
@@ -683,7 +752,7 @@ function setCamera(next: Camera): void {
 }
 
 function zoomAbout(factor: number): void {
-	if (!state.map) return;
+	if (!state.map || state.load.kind === "loading" || state.load.kind === "drawing") return;
 	const rect = canvas.getBoundingClientRect();
 	const view = viewOf(rect);
 	setCamera(zoomCamera(camera, view, view.width / 2, view.height / 2, camera.zoom * factor));
