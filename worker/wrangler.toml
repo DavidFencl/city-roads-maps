@@ -1,0 +1,8 @@
+name = "city-roads-maps"
+main = "src/index.ts"
+compatibility_date = "2026-10-13"
+workers_dev = true
+
+[[r2_buckets]]
+binding = "TILES"
+bucket_name = "city-roads-tiles"

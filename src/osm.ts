@@ -63,10 +63,12 @@ export type OsmErrorCode =
 
 export class OsmError extends Error {
 	readonly code: OsmErrorCode;
-	constructor(code: OsmErrorCode, message: string) {
+	readonly retryAfterMs?: number;
+	constructor(code: OsmErrorCode, message: string, retryAfterMs?: number) {
 		super(message);
 		this.name = "OsmError";
 		this.code = code;
+		if (retryAfterMs !== undefined) this.retryAfterMs = retryAfterMs;
 	}
 }
 
@@ -102,6 +104,9 @@ export const OVERPASS_ENDPOINTS = [
 	"https://overpass.openstreetmap.fr/api/interpreter",
 	"https://overpass.osm.ch/api/interpreter",
 ] as const;
+
+// Filled in after the Worker deploy prints its workers.dev host.
+export const TILE_CACHE_URL = "";
 
 // Nominatim usage policy caps search at one request per second.
 const NOMINATIM_MIN_INTERVAL_MS = 1000;
@@ -420,7 +425,7 @@ async function roadsInTile(
 	}
 }
 
-function overpassQuery(place: Place, box: BBox, bboxOnly: boolean): string {
+export function overpassQuery(place: Place, box: BBox, bboxOnly: boolean): string {
 	const timeout = `[out:json][timeout:${OVERPASS_TIMEOUT_SEC}];`;
 	const { south, west, north, east } = box;
 	const bbox = `(${south},${west},${north},${east})`;
@@ -436,79 +441,127 @@ function overpassQuery(place: Place, box: BBox, bboxOnly: boolean): string {
 }
 
 const BUSY_ATTEMPTS = 6;
+const SHARED_CACHE_TIMEOUT_MS = 110_000;
 
 async function postOverpass(
 	query: string,
 	options?: RequestOptions,
 ): Promise<unknown> {
+	if (TILE_CACHE_URL) {
+		try {
+			return await requestInterpreter(
+				TILE_CACHE_URL,
+				query,
+				options?.signal,
+				SHARED_CACHE_TIMEOUT_MS,
+				false,
+			);
+		} catch (error) {
+			if (isAbort(error)) throw error;
+			// A busy shared cache already asked every public server. A dead cache has not.
+			if (!canFallBackToOverpass(error)) throw error;
+		}
+	}
+	return postDirect(query, options);
+}
+
+function canFallBackToOverpass(error: unknown): boolean {
+	if (!(error instanceof OsmError)) return true;
+	return error.code !== "overpass_busy";
+}
+
+async function postDirect(query: string, options?: RequestOptions): Promise<unknown> {
 	let lastError: OsmError | undefined;
 	let sawBusy = false;
 	for (const endpoint of OVERPASS_ENDPOINTS) {
 		for (let attempt = 0; attempt < BUSY_ATTEMPTS; attempt++) {
 			if (options?.signal?.aborted) throw abortError(options.signal);
-			await waitForSlot(endpoint, options?.signal);
-			const deadline = AbortSignal.timeout((OVERPASS_TIMEOUT_SEC + 8) * 1000);
-			const signal = options?.signal
-				? AbortSignal.any([options.signal, deadline])
-				: deadline;
 			try {
-				const response = await fetch(endpoint, {
-					method: "POST",
-					headers: identityHeaders("application/x-www-form-urlencoded; charset=UTF-8"),
-					body: new URLSearchParams({ data: query }),
-					signal,
-				});
-				const body = await response.text();
-				if (response.ok) {
-					const data = parseOverpassBody(body);
-					if (overpassFailed(data)) {
-						const remark = overpassRemark(data) ?? `Overpass error from ${endpoint}`;
-						if (isServerBusy(remark)) {
-							sawBusy = true;
-							lastError = busyError();
-							await sleep(busyWait(attempt), options?.signal);
-							continue;
-						}
-						throw new OsmError("overpass_http", remark);
-					}
-					if (hasElements(data) || !sawBusy) return data;
-					lastError = busyError();
-					continue;
-				}
-				if (response.status === 429 || isServerBusy(body)) {
-					sawBusy = true;
-					lastError = busyError();
-					const retryAfter = Number(response.headers.get("retry-after"));
-					const wait =
-						Number.isFinite(retryAfter) && retryAfter > 0
-							? retryAfter * 1000
-							: busyWait(attempt);
-					await sleep(wait, options?.signal);
-					continue;
-				}
-				lastError = new OsmError(
-					"overpass_http",
-					`Overpass ${response.status} from ${endpoint}`,
+				const data = await requestInterpreter(
+					endpoint,
+					query,
+					options?.signal,
+					(OVERPASS_TIMEOUT_SEC + 8) * 1000,
+					true,
 				);
-				break;
+				// osm.ch answers an empty 200 after it has already said it is busy.
+				if (hasElements(data) || !sawBusy) return data;
+				lastError = busyError();
+				continue;
 			} catch (error) {
-				if (options?.signal?.aborted) throw abortError(options.signal);
-				if (error instanceof OsmError) throw error;
-				lastError = new OsmError(
-					"overpass_http",
-					error instanceof Error ? error.message : `Overpass failed at ${endpoint}`,
-				);
-				break;
+				if (isAbort(error)) throw error;
+				if (error instanceof OsmError && error.code === "overpass_busy") {
+					sawBusy = true;
+					lastError = error;
+					const retryAfter = error.retryAfterMs;
+					await sleep(retryAfter ?? busyWait(attempt), options?.signal);
+					continue;
+				}
+				if (error instanceof OsmError && error.code === "overpass_http") {
+					lastError = error;
+					break;
+				}
+				throw error;
 			}
 		}
 	}
-	throw lastError ?? busyError();
+	throw lastError ?? (sawBusy ? busyError() : new OsmError("overpass_http", "Overpass failed."));
 }
 
-function busyError(): OsmError {
+async function requestInterpreter(
+	endpoint: string,
+	query: string,
+	signal: AbortSignal | undefined,
+	timeoutMs: number,
+	checkSlot: boolean,
+): Promise<unknown> {
+	if (signal?.aborted) throw abortError(signal);
+	if (checkSlot) await waitForSlot(endpoint, signal);
+	const deadline = AbortSignal.timeout(timeoutMs);
+	const combined = signal ? AbortSignal.any([signal, deadline]) : deadline;
+	let response: Response;
+	try {
+		response = await fetch(endpoint, {
+			method: "POST",
+			headers: identityHeaders("application/x-www-form-urlencoded; charset=UTF-8"),
+			body: new URLSearchParams({ data: query }),
+			signal: combined,
+		});
+	} catch (error) {
+		if (signal?.aborted) throw abortError(signal);
+		if (error instanceof OsmError) throw error;
+		throw new OsmError(
+			"overpass_http",
+			error instanceof Error ? error.message : `Overpass failed at ${endpoint}`,
+		);
+	}
+	const body = await response.text();
+	if (response.ok) {
+		const data = parseOverpassBody(body);
+		if (overpassFailed(data)) {
+			const remark = overpassRemark(data) ?? `Overpass error from ${endpoint}`;
+			if (isServerBusy(remark)) throw busyError(retryAfterHeader(response));
+			throw new OsmError("overpass_http", remark);
+		}
+		return data;
+	}
+	if (response.status === 429 || isServerBusy(body)) {
+		throw busyError(retryAfterHeader(response));
+	}
+	throw new OsmError("overpass_http", `Overpass ${response.status} from ${endpoint}`);
+}
+
+function retryAfterHeader(response: Response): number | undefined {
+	const retryAfter = Number(response.headers.get("retry-after"));
+	if (Number.isFinite(retryAfter) && retryAfter > 0) return retryAfter * 1000;
+	return undefined;
+}
+
+function busyError(retryAfterMs?: number): OsmError {
 	return new OsmError(
 		"overpass_busy",
 		"The map server is busy. Wait a moment, then try the city again.",
+		retryAfterMs,
 	);
 }
 
@@ -528,7 +581,10 @@ async function waitForSlot(endpoint: string, signal?: AbortSignal): Promise<void
 		if (typeof globalThis.window === "undefined") {
 			headers.set("User-Agent", APP_USER_AGENT);
 		}
-		const response = await fetch(url, { headers, signal });
+		const statusSignal = signal
+			? AbortSignal.any([signal, AbortSignal.timeout(4000)])
+			: AbortSignal.timeout(4000);
+		const response = await fetch(url, { headers, signal: statusSignal });
 		if (!response.ok) return;
 		const text = await response.text();
 		if (/slots available now/i.test(text)) return;
