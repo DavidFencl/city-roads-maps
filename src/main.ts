@@ -61,6 +61,8 @@ const canvas = byId("map", HTMLCanvasElement);
 const emptyEl = byId("empty", HTMLParagraphElement);
 const loadingEl = byId("loading", HTMLParagraphElement);
 const loadingText = byId("loading-text", HTMLElement);
+const progressEl = byId("progress", HTMLParagraphElement);
+const progressText = byId("progress-text", HTMLElement);
 const zoomEl = byId("zoom", HTMLDivElement);
 const zoomInBtn = byId("zoom-in", HTMLButtonElement);
 const zoomOutBtn = byId("zoom-out", HTMLButtonElement);
@@ -442,8 +444,11 @@ function syncUi(options?: { paint?: boolean }): void {
 	statusEl.dataset.busy = busy ? "true" : "false";
 	statusMark.hidden = !busy;
 	const showCover = busy && (state.map?.roads.length ?? 0) === 0;
+	const showProgress = busy && !showCover;
 	loadingEl.hidden = !showCover;
 	loadingText.textContent = message;
+	progressEl.hidden = !showProgress;
+	progressText.textContent = tileNote ? `Loading ${tileNote}` : message;
 	plate.setAttribute("aria-busy", busy ? "true" : "false");
 
 	const err =
