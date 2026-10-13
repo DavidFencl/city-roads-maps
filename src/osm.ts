@@ -105,8 +105,7 @@ export const OVERPASS_ENDPOINTS = [
 	"https://overpass.osm.ch/api/interpreter",
 ] as const;
 
-// Filled in after the Worker deploy prints its workers.dev host.
-export const TILE_CACHE_URL = "";
+export const TILE_CACHE_URL = "https://city-roads-maps.david-fencl98.workers.dev/interpreter";
 
 // Nominatim usage policy caps search at one request per second.
 const NOMINATIM_MIN_INTERVAL_MS = 1000;

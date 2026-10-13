@@ -12,7 +12,7 @@ The code here is a separate Vite and TypeScript site, written while using that i
 - A margin adds roads outside the city boundary.
 - You can zoom, pan, and pinch, then fit the city again. Export saves the full map, not the current zoom.
 - Presets and a custom background and road color.
-- The browser keeps a finished city and its tiles for two weeks, so opening that city again skips the download.
+- This browser keeps a finished city and its tiles for 12 hours. The same tiles are stored for two weeks in a shared cache, so another visitor does not download them from Overpass again.
 
 A large city such as Prague is split into tiles. One OpenStreetMap query for the whole city times out. The public Overpass servers are often busy, so the first load of a big city can take minutes. A city this browser has already stored opens from that local copy.
 
@@ -50,7 +50,7 @@ npm run verify
 
 `npm run verify` asks Nominatim and Overpass. Large cities can take a few minutes. Files land in `verify-output/`, which git ignores.
 
-A Cloudflare Worker for a shared tile cache lives in `worker/`. It is not deployed. The live site talks to Overpass directly and caches in the browser.
+The shared cache is a Cloudflare Worker in `worker/`, at `https://city-roads-maps.david-fencl98.workers.dev`. It stores a successful tile for two weeks. If that Worker is down, the app asks Overpass directly.
 
 ## Credits
 

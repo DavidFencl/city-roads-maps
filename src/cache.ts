@@ -4,7 +4,8 @@ const DB_NAME = "city-roads-maps";
 const MAP_STORE = "maps";
 const TILE_STORE = "tiles";
 const DB_VERSION = 2;
-const MAX_AGE_MS = 14 * 24 * 60 * 60 * 1000;
+// The shared cache keeps tiles for two weeks. This browser only needs a short copy.
+const MAX_AGE_MS = 12 * 60 * 60 * 1000;
 
 const HIGHWAYS = new Set<string>(HIGHWAY_CLASSES);
 
