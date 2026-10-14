@@ -1,6 +1,6 @@
 # Draw every road
 
-[city-roads-maps](https://davidfencl.github.io/city-roads-maps/) draws every road in a city as line art. Name a place, and the app looks it up, downloads its streets from OpenStreetMap, and paints them on a square plate. You can change the colors, zoom in, include a band of roads outside the city, and save a PNG or SVG of the full map.
+[city-roads-maps](https://davidfencl.github.io/city-roads-maps/) draws every road in a city as line art. Name a place, and the app looks it up, downloads its streets from OpenStreetMap, and paints them on a square plate. You can change the colors, zoom in, include a band of roads outside the city, and save a PNG or SVG poster of the full map.
 
 ## Why this exists
 

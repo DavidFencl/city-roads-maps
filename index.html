@@ -3,7 +3,44 @@
 	<head>
 		<meta charset="UTF-8" />
 		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-		<title>Draw every road</title>
+		<title>Draw every road in a city</title>
+		<meta
+			name="description"
+			content="Draw every road in any city as line art from OpenStreetMap. Recolor the map, zoom in, and export a PNG or SVG."
+		/>
+		<link rel="canonical" href="https://davidfencl.github.io/city-roads-maps/" />
+		<meta name="theme-color" content="#14161a" />
+		<meta property="og:type" content="website" />
+		<meta property="og:title" content="Draw every road in a city" />
+		<meta
+			property="og:description"
+			content="Draw every road in any city as line art from OpenStreetMap. Recolor the map, zoom in, and export a PNG or SVG."
+		/>
+		<meta property="og:url" content="https://davidfencl.github.io/city-roads-maps/" />
+		<meta property="og:image" content="https://davidfencl.github.io/city-roads-maps/og.png" />
+		<meta property="og:image:width" content="1200" />
+		<meta property="og:image:height" content="630" />
+		<meta name="twitter:card" content="summary_large_image" />
+		<meta name="twitter:title" content="Draw every road in a city" />
+		<meta
+			name="twitter:description"
+			content="Draw every road in any city as line art from OpenStreetMap. Recolor the map, zoom in, and export a PNG or SVG."
+		/>
+		<meta name="twitter:image" content="https://davidfencl.github.io/city-roads-maps/og.png" />
+		<script type="application/ld+json">
+			{
+				"@context": "https://schema.org",
+				"@type": "WebApplication",
+				"name": "Draw every road",
+				"url": "https://davidfencl.github.io/city-roads-maps/",
+				"description": "Draw every road in any city as line art from OpenStreetMap. Recolor the map, zoom in, and export a PNG or SVG.",
+				"applicationCategory": "DesignApplication",
+				"operatingSystem": "Any",
+				"offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+				"author": { "@type": "Person", "name": "David Fencl", "url": "https://github.com/DavidFencl" },
+				"isBasedOn": "https://github.com/anvaka/city-roads"
+			}
+		</script>
 		<link
 			rel="icon"
 			href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2314161a'/%3E%3Cpath d='M4 22 L12 10 L20 18 L28 8' fill='none' stroke='%23c4783a' stroke-width='2'/%3E%3C/svg%3E"
@@ -20,7 +57,9 @@
 			<aside class="rail" aria-label="Controls">
 				<header class="mast">
 					<h1>Draw <em>every</em> road</h1>
-					<p class="lede">Name a city. We pull its streets from OpenStreetMap and ink them as line art.</p>
+					<p class="lede">
+						Name a city. We pull its streets from OpenStreetMap and ink them as line art you can zoom and export.
+					</p>
 				</header>
 
 				<form id="search-form" class="search">

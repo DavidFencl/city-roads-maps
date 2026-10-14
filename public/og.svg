@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630">
+	<rect width="1200" height="630" fill="#f4efe4"/>
+	<rect width="460" height="630" fill="#14161a"/>
+	<text x="56" y="250" fill="#f4efe4" font-family="Liberation Serif" font-size="78">Draw every</text>
+	<text x="56" y="338" fill="#c4783a" font-family="Liberation Serif" font-size="78" font-style="italic">road</text>
+	<text x="56" y="420" fill="#a39e94" font-family="Liberation Sans" font-size="24">OpenStreetMap line art</text>
+	<g fill="none" stroke="#1a1a1a" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+		<path d="M560 470 C640 420 690 390 760 410 C840 434 880 360 960 340"/>
+		<path d="M540 300 C620 280 700 310 780 260 C860 210 940 240 1100 180"/>
+		<path d="M600 160 L720 220 L800 190 L980 250"/>
+		<path d="M580 520 L700 480 L860 530 L1040 470"/>
+	</g>
+	<g fill="none" stroke="#c4783a" stroke-width="4" stroke-linecap="round">
+		<path d="M520 390 C650 360 760 400 900 330 C980 290 1060 310 1140 260"/>
+		<path d="M640 140 C760 180 820 150 940 190"/>
+	</g>
+</svg>

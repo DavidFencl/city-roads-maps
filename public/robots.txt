@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://davidfencl.github.io/city-roads-maps/sitemap.xml
